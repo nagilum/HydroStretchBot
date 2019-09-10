@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -10,6 +9,9 @@ namespace HydroStretchBot {
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
 
         //Flash both the window caption and taskbar button.
         //This is equivalent to setting the FLASHW_CAPTION | FLASHW_TRAY flags. 
@@ -27,10 +29,25 @@ namespace HydroStretchBot {
             public uint dwTimeout;
         }
 
+        public struct LASTINPUTINFO {
+            public uint cbSize;
+            public uint dwTime;
+        }
+
         /// <summary>
-        /// The hours the dialog has been displayed.
+        /// Idle threshold time, 5 minutes.
         /// </summary>
-        private readonly List<string> HoursDisplayed = new List<string>();
+        public uint UserIdleThreshold = 5 * 60 * 1000;
+
+        /// <summary>
+        /// Number of seconds the user has been working.
+        /// </summary>
+        public uint WorkingSeconds { get; set; }
+
+        /// <summary>
+        /// How many seconds to wait for break alert.
+        /// </summary>
+        public uint BreakThreshold = 60 * 60;
 
         /// <summary>
         /// Main timer.
@@ -57,10 +74,10 @@ namespace HydroStretchBot {
                     Settings.Default.WindowTop);
             }
 
-            // Setup timer.
+            // Setup timer, with an interval of 1 second.
             this.Timer = new Timer {
                 Enabled = true,
-                Interval = 500
+                Interval = 1000
             };
 
             this.Timer.Tick += TimerTick;
@@ -88,49 +105,34 @@ namespace HydroStretchBot {
         /// Update UI.
         /// </summary>
         private void TimerTick(object sender, EventArgs e) {
-            var dt = DateTime.Now;
-            var nh = dt.Hour + 1;
+            var isUserIdle = this.IsUserIdle();
 
-            if (nh == 24) {
-                nh = 0;
+            if (isUserIdle) {
+                this.WorkingSeconds = 0;
+            }
+            else {
+                this.WorkingSeconds++;
             }
 
-            var nd = new DateTime(
-                dt.Year,
-                dt.Month,
-                dt.Day,
-                nh, 0, 0);
+            // Seconds till next break.
+            var seconds = this.BreakThreshold - this.WorkingSeconds;
+            uint minutes = 0;
 
-            var ts = nd - dt;
-
-            var s = (int) ts.TotalSeconds;
-            var m = 0;
-
-            if (s > 60) {
-                m = s / 60;
-                s -= m * 60;
+            if (seconds > 60) {
+                minutes = seconds / 60;
+                seconds -= minutes * 60;
             }
 
             this.lbText.Text = string.Format(
                 "Time to next break is {0} min{1} and {2} sec{3}",
-                m,
-                m == 1 ? "" : "s",
-                s,
-                s == 1 ? "" : "s");
+                minutes,
+                minutes == 1 ? "" : "s",
+                seconds,
+                seconds == 1 ? "" : "s");
 
-            if (m > 0 ||
-                s > 0) {
-
+            if (this.WorkingSeconds < this.BreakThreshold) {
                 return;
             }
-
-            var dts = dt.ToString("yyyy-MM-dd HH");
-
-            if (this.HoursDisplayed.Contains(dts)) {
-                return;
-            }
-
-            this.HoursDisplayed.Add(dts);
 
             this.lbText.Text = "It's time to take a break. Get up and stretch your legs and get something to drink.";
             this.Timer.Stop();
@@ -153,6 +155,24 @@ namespace HydroStretchBot {
             fInfo.dwTimeout = 0;
 
             return FlashWindowEx(ref fInfo);
+        }
+
+        /// <summary>
+        /// Get user idle time.
+        /// </summary>
+        public uint GetIdleTime() {
+            var lastInPut = new LASTINPUTINFO();
+            lastInPut.cbSize = (uint) Marshal.SizeOf(lastInPut);
+            GetLastInputInfo(ref lastInPut);
+
+            return (uint) Environment.TickCount - lastInPut.dwTime;
+        }
+
+        /// <summary>
+        /// Returns true if user idle time is greater than set threshold.
+        /// </summary>
+        public bool IsUserIdle() {
+            return this.GetIdleTime() > this.UserIdleThreshold;
         }
     }
 }
